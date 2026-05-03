@@ -38,6 +38,7 @@ env:
 
 permissions:
   contents: write
+  actions: read
 
 jobs:
   build_publish_release:
