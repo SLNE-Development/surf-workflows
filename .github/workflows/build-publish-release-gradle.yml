@@ -1,0 +1,166 @@
+name: Build, Publish and Release Gradle Modules
+
+on:
+  workflow_call:
+    inputs:
+      maven-publish:
+        type: boolean
+        required: false
+        default: true
+        description: "Whether to publish all Maven publications after building."
+      modules:
+        type: string
+        required: false
+        default: ""
+        description: "Optional semicolon-separated JAR filename patterns to attach to the GitHub release. Example: 'surf-redis-paper-*-all.jar;surf-redis-velocity-*-all.jar'. Leave empty to create a release without assets."
+      java-version:
+        type: string
+        required: false
+        default: "25"
+        description: "Java version used for the Gradle build."
+      check-kotlin-abi:
+        type: boolean
+        default: false
+        required: false
+        description: "Whether to run the 'checkKotlinAbi' Gradle task before publishing."
+    secrets:
+      SLNE_RELEASES_REPO_USERNAME:
+        required: true
+        description: "Username used by Gradle to publish to the SLNE releases repository."
+      SLNE_RELEASES_REPO_PASSWORD:
+        required: true
+        description: "Password used by Gradle to publish to the SLNE releases repository."
+
+env:
+  DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+  SLNE_RELEASES_REPO_USERNAME: ${{ secrets.SLNE_RELEASES_REPO_USERNAME }}
+  SLNE_RELEASES_REPO_PASSWORD: ${{ secrets.SLNE_RELEASES_REPO_PASSWORD }}
+
+permissions:
+  contents: write
+
+jobs:
+  build_publish_release:
+    name: Build, Publish and Release
+    runs-on: self-hosted
+
+    steps:
+      - name: Collect workflow telemetry
+        uses: catchpoint/workflow-telemetry-action@v2
+
+      - name: Check out repository
+        uses: actions/checkout@v6.0.2
+        with:
+          fetch-depth: 0
+
+      - name: Set up GraalVM JDK
+        uses: actions/setup-java@v5
+        with:
+          distribution: "graalvm"
+          java-version: ${{ inputs.java-version }}
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v6
+        with:
+          allow-snapshot-wrappers: true
+
+      - name: Make gradlew executable
+        run: chmod +x ./gradlew
+
+      - name: Build module JARs
+        run: ./gradlew shadowJar --parallel --no-scan --stacktrace
+
+      - name: Check Kotlin ABI
+        if: ${{ inputs.check-kotlin-abi }}
+        run: ./gradlew checkKotlinAbi --parallel --no-scan --stacktrace
+
+      - name: Publish Maven artifacts
+        if: ${{ inputs.maven-publish }}
+        run: ./gradlew publish --parallel --no-scan --stacktrace
+
+      - name: Read project version
+        shell: bash
+        run: |
+          GRADLE_PROPERTIES=$(./gradlew properties --quiet --no-scan)
+
+          VERSION=$(echo "$GRADLE_PROPERTIES" | awk '/^version:/ { print $2; exit }')
+          SNAPSHOT_PROPERTY=$(echo "$GRADLE_PROPERTIES" | awk '/^snapshot:/ { print $2; exit }')
+
+          if [ -z "$VERSION" ]; then
+            echo "Could not determine project version from Gradle properties." >&2
+            exit 1
+          fi
+
+          if [ "$SNAPSHOT_PROPERTY" = "true" ] && [[ "$VERSION" != *SNAPSHOT* ]]; then
+            VERSION="${VERSION}-SNAPSHOT"
+          fi
+
+          if [[ "$VERSION" == *SNAPSHOT* ]]; then
+            SNAPSHOT_FLAG=true
+          else
+            SNAPSHOT_FLAG=false
+          fi
+
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "SNAPSHOT_FLAG=$SNAPSHOT_FLAG" >> "$GITHUB_ENV"
+
+      - name: Determine release options
+        shell: bash
+        run: |
+          if [ "$SNAPSHOT_FLAG" = "true" ]; then
+            echo "PRERELEASE=true" >> "$GITHUB_ENV"
+          else
+            echo "PRERELEASE=false" >> "$GITHUB_ENV"
+          fi
+
+          if [ "$SNAPSHOT_FLAG" = "true" ] || [ "$GITHUB_REF_NAME" != "$DEFAULT_BRANCH" ]; then
+            echo "MAKE_LATEST=false" >> "$GITHUB_ENV"
+          else
+            echo "MAKE_LATEST=true" >> "$GITHUB_ENV"
+          fi
+
+      - name: Collect release JARs
+        if: ${{ inputs.modules != '' }}
+        shell: bash
+        run: |
+          {
+            echo "JAR_FILES<<EOF"
+
+            IFS=';' read -ra MODULE_PATTERNS <<< "${{ inputs.modules }}"
+
+            for pattern in "${MODULE_PATTERNS[@]}"; do
+              pattern="$(echo "$pattern" | xargs)"
+
+              if [ -n "$pattern" ]; then
+                find . -path "*/build/libs/$pattern" -type f
+              fi
+            done | sort -u
+
+            echo "EOF"
+          } >> "$GITHUB_ENV"
+
+      - name: Validate release JARs
+        if: ${{ inputs.modules != '' }}
+        shell: bash
+        run: |
+          if [ -z "$JAR_FILES" ]; then
+            echo "No JAR files matched the configured module patterns:" >&2
+            echo "${{ inputs.modules }}" >&2
+            exit 1
+          fi
+
+          echo "Release JARs:"
+          echo "$JAR_FILES"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ env.VERSION }}
+          name: Release ${{ env.VERSION }}
+          draft: false
+          prerelease: ${{ env.PRERELEASE }}
+          make_latest: ${{ env.MAKE_LATEST }}
+          files: ${{ env.JAR_FILES }}
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
