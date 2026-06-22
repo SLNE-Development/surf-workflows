@@ -69,7 +69,7 @@ jobs:
         run: chmod +x ./gradlew
 
       - name: Build module JARs
-        run: ./gradlew clean shadowJar --parallel --no-scan --stacktrace
+        run: ./gradlew clean shadowJar --parallel --no-scan --stacktrace --refresh-dependencies
 
       - name: Check Kotlin ABI
         if: ${{ inputs.check-kotlin-abi }}
