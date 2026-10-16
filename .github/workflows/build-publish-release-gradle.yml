@@ -23,6 +23,11 @@ on:
         default: false
         required: false
         description: "Whether to run the 'checkKotlinAbi' Gradle task before publishing."
+      pre-build-command:
+        type: string
+        required: false
+        default: ""
+        description: "Optional bash command run in the repository root before the Gradle build, e.g. to initialize submodules or generate sources. Leave empty to skip."
     secrets:
       SLNE_RELEASES_REPO_USERNAME:
         required: true
@@ -67,6 +72,15 @@ jobs:
 
       - name: Make gradlew executable
         run: chmod +x ./gradlew
+
+      - name: Run pre-build command
+        if: ${{ inputs.pre-build-command != '' }}
+        shell: bash
+        env:
+          PRE_BUILD_COMMAND: ${{ inputs.pre-build-command }}
+        run: |
+          set -euo pipefail
+          eval "$PRE_BUILD_COMMAND"
 
       - name: Build module JARs
         run: ./gradlew shadowJar --parallel --no-scan --stacktrace
