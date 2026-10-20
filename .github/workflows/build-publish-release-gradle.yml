@@ -43,17 +43,17 @@ env:
 
 permissions:
   contents: write
-  actions: read
 
 jobs:
   build_publish_release:
     name: Build, Publish and Release
     runs-on: self-hosted
+    timeout-minutes: 30
+    concurrency:
+      group: build-publish-release-${{ github.ref }}
+      cancel-in-progress: false
 
     steps:
-      - name: Collect workflow telemetry
-        uses: catchpoint/workflow-telemetry-action@v2
-
       - name: Check out repository
         uses: actions/checkout@v6.0.2
         with:
@@ -83,7 +83,7 @@ jobs:
           eval "$PRE_BUILD_COMMAND"
 
       - name: Build module JARs
-        run: ./gradlew shadowJar --parallel --no-scan --stacktrace
+        run: ./gradlew shadowJar --parallel --no-scan --stacktrace --refresh-dependencies
 
       - name: Check Kotlin ABI
         if: ${{ inputs.check-kotlin-abi }}
@@ -137,11 +137,13 @@ jobs:
       - name: Collect release JARs
         if: ${{ inputs.modules != '' }}
         shell: bash
+        env:
+          MODULES: ${{ inputs.modules }}
         run: |
           {
             echo "JAR_FILES<<EOF"
 
-            IFS=';' read -ra MODULE_PATTERNS <<< "${{ inputs.modules }}"
+            IFS=';' read -ra MODULE_PATTERNS <<< "$MODULES"
 
             for pattern in "${MODULE_PATTERNS[@]}"; do
               pattern="$(echo "$pattern" | xargs)"
@@ -157,10 +159,12 @@ jobs:
       - name: Validate release JARs
         if: ${{ inputs.modules != '' }}
         shell: bash
+        env:
+          MODULES: ${{ inputs.modules }}
         run: |
           if [ -z "$JAR_FILES" ]; then
             echo "No JAR files matched the configured module patterns:" >&2
-            echo "${{ inputs.modules }}" >&2
+            echo "$MODULES" >&2
             exit 1
           fi
 
